@@ -20,7 +20,7 @@ class VocalExtractor:
     """Model loading + rolling-buffer vocal separation. No PyQt/sounddevice dependency."""
 
     def __init__(self, sample_rate=44100, block_size=4048, max_buffer_size=16000, back=1024, log=None,
-                 music_threshold=0.15, hysteresis_on=2, hysteresis_off=6):
+                 music_threshold_on=0.18, music_threshold_off=0.09, ema_alpha=0.25):
         self.log = log or _default_logger.info
 
         if torch.cuda.is_available():
@@ -43,13 +43,20 @@ class VocalExtractor:
         # vocals) we pass the original audio through untouched instead of running
         # it through the vocal-only filter, which only makes sense when there's
         # actual accompaniment to remove.
-        self.music_threshold = music_threshold  # accompaniment_rms / mix_rms above this = "music"
-        self.hysteresis_on = hysteresis_on    # consecutive music blocks before filtering kicks in
-        self.hysteresis_off = hysteresis_off  # consecutive quiet blocks before filtering stops
+        #
+        # Speech's energy naturally fluctuates block-to-block (pauses, plosives,
+        # sibilance), so a single threshold with a block-count timer could still
+        # flap on/off rapidly right around the boundary — each flap crossfades,
+        # which sounds like stutter. Two fixes: an EMA smooths the ratio itself
+        # before thresholding, and a Schmitt-trigger deadband (separate on/off
+        # thresholds) means noise has to move further to flip state, not just
+        # cross one line repeatedly.
+        self.music_threshold_on = music_threshold_on    # smoothed ratio must exceed this to start filtering
+        self.music_threshold_off = music_threshold_off  # must drop below this (lower) to stop
+        self.ema_alpha = ema_alpha
+        self._smoothed_ratio = 0.0
         self._filtering = False
         self._prev_filtering = False
-        self._music_streak = 0
-        self._quiet_streak = 0
 
     def load_model(self):
         torch.hub.set_dir(self.resource_path("torch_cache"))
@@ -62,10 +69,9 @@ class VocalExtractor:
 
     def reset_buffer(self):
         self.buffer = np.zeros([self.max_buffer_size, 2]).astype(np.float32)
+        self._smoothed_ratio = 0.0
         self._filtering = False
         self._prev_filtering = False
-        self._music_streak = 0
-        self._quiet_streak = 0
 
     def _slice_block(self, arr):
         return arr[-self.block_size - self.back: -self.back if self.back > 0 else None, :]
@@ -95,16 +101,11 @@ class VocalExtractor:
         original_rms = float(np.sqrt(np.mean(original_block ** 2))) + 1e-8
         music_ratio = accompaniment_rms / original_rms
 
-        if music_ratio > self.music_threshold:
-            self._music_streak += 1
-            self._quiet_streak = 0
-        else:
-            self._quiet_streak += 1
-            self._music_streak = 0
+        self._smoothed_ratio = self.ema_alpha * music_ratio + (1 - self.ema_alpha) * self._smoothed_ratio
 
-        if not self._filtering and self._music_streak >= self.hysteresis_on:
+        if not self._filtering and self._smoothed_ratio > self.music_threshold_on:
             self._filtering = True
-        elif self._filtering and self._quiet_streak >= self.hysteresis_off:
+        elif self._filtering and self._smoothed_ratio < self.music_threshold_off:
             self._filtering = False
 
         new_block = vocals_block if self._filtering else original_block

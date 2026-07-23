@@ -17,14 +17,16 @@ SAMPLE_RATE = 44100
 BLOCK_SIZE = 2048
 MAX_BUFFER_SIZE = 9000
 BACK = 512
-MUSIC_THRESHOLD = 0.15  # accompaniment_rms / mix_rms above this = "music" (see vocal_extractor.py)
+MUSIC_THRESHOLD_ON = 0.18   # smoothed accompaniment_rms/mix_rms must exceed this to start filtering
+MUSIC_THRESHOLD_OFF = 0.09  # must drop below this (lower, deadband) to stop (see vocal_extractor.py)
 
 extractor = VocalExtractor(
     sample_rate=SAMPLE_RATE,
     block_size=BLOCK_SIZE,
     max_buffer_size=MAX_BUFFER_SIZE,
     back=BACK,
-    music_threshold=MUSIC_THRESHOLD,
+    music_threshold_on=MUSIC_THRESHOLD_ON,
+    music_threshold_off=MUSIC_THRESHOLD_OFF,
     log=log.info,
 )
 
