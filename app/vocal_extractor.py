@@ -20,7 +20,7 @@ class VocalExtractor:
     """Model loading + rolling-buffer vocal separation. No PyQt/sounddevice dependency."""
 
     def __init__(self, sample_rate=44100, block_size=4048, max_buffer_size=16000, back=1024, log=None,
-                 music_threshold_on=0.18, music_threshold_off=0.09, ema_alpha=0.25):
+                 music_threshold_on=0.18, music_threshold_off=0.09, ema_alpha=0.25, edge_crossfade_ms=8):
         self.log = log or _default_logger.info
 
         if torch.cuda.is_available():
@@ -58,6 +58,16 @@ class VocalExtractor:
         self._filtering = False
         self._prev_filtering = False
 
+        # Each "vocals" block is inferred independently from a shifting rolling
+        # buffer, then spliced back-to-back with the next one — nothing guarantees
+        # the waveform lines up at that seam, so hard-cutting them can produce an
+        # audible click/discontinuity every block even while steadily filtering.
+        # Crossfading a short edge against the previous block's actual tail smooths
+        # that seam out. Passthrough audio is naturally continuous already, so this
+        # is a no-op there, but it's applied uniformly for simplicity.
+        self.edge_crossfade_samples = max(1, int(sample_rate * edge_crossfade_ms / 1000))
+        self._prev_tail = None
+
     def load_model(self):
         torch.hub.set_dir(self.resource_path("torch_cache"))
         self.log(f"Loading model on {self.device} (please don't start until the model is ready)")
@@ -72,6 +82,7 @@ class VocalExtractor:
         self._smoothed_ratio = 0.0
         self._filtering = False
         self._prev_filtering = False
+        self._prev_tail = None
 
     def _slice_block(self, arr):
         return arr[-self.block_size - self.back: -self.back if self.back > 0 else None, :]
@@ -95,7 +106,10 @@ class VocalExtractor:
         accompaniment_block = self._slice_block(
             (out[0][0] + out[0][1] + out[0][2]).cpu().numpy().T.astype(np.float32)
         )
-        original_block = self._slice_block(self.buffer)
+        # .copy(): _slice_block returns a view into self.buffer, and output_block
+        # (derived from this) gets mutated in place below for the edge crossfade —
+        # must not alias the buffer that future calls read for context.
+        original_block = self._slice_block(self.buffer).copy()
 
         accompaniment_rms = float(np.sqrt(np.mean(accompaniment_block ** 2)))
         original_rms = float(np.sqrt(np.mean(original_block ** 2))) + 1e-8
@@ -118,6 +132,14 @@ class VocalExtractor:
             ramp = np.linspace(0, 1, new_block.shape[0], dtype=np.float32).reshape(-1, 1)
             output_block = prev_block * (1 - ramp) + new_block * ramp
         self._prev_filtering = self._filtering
+
+        # Smooth the seam against the previous block's actual output, independent
+        # of whether the mode changed — see the comment in __init__.
+        if self._prev_tail is not None:
+            n = min(self.edge_crossfade_samples, self._prev_tail.shape[0], output_block.shape[0])
+            ramp = np.linspace(0, 1, n, dtype=np.float32).reshape(-1, 1)
+            output_block[:n] = self._prev_tail[-n:] * (1 - ramp) + output_block[:n] * ramp
+        self._prev_tail = output_block[-self.edge_crossfade_samples:].copy()
 
         return output_block, processing_ms, block_ms, self._filtering
 
