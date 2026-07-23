@@ -15,19 +15,19 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# onedir, not onefile: PyInstaller's onefile mode unpacks itself via an extra
+# wrapper process at launch, which combined with a macOS .app bundle can spawn
+# a second GUI shell (duplicate menu-bar icon). onedir avoids that.
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='MusicMuteServer',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -36,8 +36,18 @@ exe = EXE(
     entitlements_file=None,
 )
 
-app = BUNDLE(
+coll = COLLECT(
     exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='MusicMuteServer',
+)
+
+app = BUNDLE(
+    coll,
     name='MusicMuteServer.app',
     icon=None,
     bundle_identifier='com.musicmute.server',
