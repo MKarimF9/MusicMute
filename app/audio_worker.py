@@ -64,7 +64,7 @@ class AudioWorker(QObject):
         if status:
             self.log_signal.emit(f"Status Error: {status}")
         try:
-            vocals, processing_ms, block_ms = self.extractor.extract_vocals(indata)
+            vocals, processing_ms, block_ms, _is_filtering = self.extractor.extract_vocals(indata)
             self.timing_signal.emit(processing_ms, block_ms)
             if vocals.shape[0] < frames:
                 pad = np.zeros((frames - vocals.shape[0], 2), dtype=np.float32)

@@ -17,12 +17,14 @@ SAMPLE_RATE = 44100
 BLOCK_SIZE = 2048
 MAX_BUFFER_SIZE = 9000
 BACK = 512
+MUSIC_THRESHOLD = 0.15  # accompaniment_rms / mix_rms above this = "music" (see vocal_extractor.py)
 
 extractor = VocalExtractor(
     sample_rate=SAMPLE_RATE,
     block_size=BLOCK_SIZE,
     max_buffer_size=MAX_BUFFER_SIZE,
     back=BACK,
+    music_threshold=MUSIC_THRESHOLD,
     log=log.info,
 )
 
@@ -51,11 +53,14 @@ async def handle(ws):
         while True:
             message = await queue.get()
             chunk = np.frombuffer(message, dtype=np.float32).reshape(-1, CHANNELS)
-            vocals, processing_ms, block_ms = await loop.run_in_executor(
+            vocals, processing_ms, block_ms, is_filtering = await loop.run_in_executor(
                 None, extractor.extract_vocals, chunk
             )
             rt_factor = processing_ms / block_ms if block_ms > 0 else 0
-            log.info(f"processing={processing_ms:.1f}ms block={block_ms:.1f}ms rt={rt_factor:.2f}")
+            log.info(
+                f"processing={processing_ms:.1f}ms block={block_ms:.1f}ms rt={rt_factor:.2f} "
+                f"filtering={is_filtering}"
+            )
             await ws.send(vocals.astype(np.float32).tobytes())
 
     recv_task = asyncio.create_task(receiver())
