@@ -139,4 +139,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     stopCapture();
     sendResponse({ ok: true });
   }
+  if (message.type === "flag") {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "flag" }));
+    } else {
+      console.warn("MusicMute: flag requested but not connected to server");
+    }
+  }
 });

@@ -4,13 +4,20 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QPushButton, QPlainTextEdit, QSystemTrayIcon, QMenu, QLineEdit
 )
-from PyQt6.QtCore import QThread
+from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QIcon, QAction, QIntValidator
 from app.audio_worker import AudioWorker
 import os
 
 
 class MainWindow(QMainWindow):
+    # Emitted to the worker thread — never call worker methods or set its
+    # attributes directly from here, that's a cross-thread data race (see F1
+    # in docs/CHANGES.md). Queued delivery is automatic since the worker
+    # QObject lives on worker_thread.
+    start_requested = pyqtSignal(int, int, int, int, int)  # block, buf, back, input_idx, output_idx
+    stop_requested = pyqtSignal()
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Music Mute")
@@ -18,8 +25,6 @@ class MainWindow(QMainWindow):
 
         # UI State
         self.is_service_active = False
-
-
 
         # Build UI
         self.init_ui()
@@ -36,9 +41,8 @@ class MainWindow(QMainWindow):
         self.worker.log_signal.connect(self.log_to_console)
         self.worker.timing_signal.connect(self.update_timing)
         self.worker.model_loaded.connect(self.on_model_loaded)
-
-        # # Load model in background
-        # self.worker.load_model()
+        self.start_requested.connect(self.worker.start_stream)
+        self.stop_requested.connect(self.worker.stop_stream)
 
     def init_ui(self):
         central_widget = QWidget()
@@ -59,9 +63,10 @@ class MainWindow(QMainWindow):
 
         # Config Parameters
         params_layout = QHBoxLayout()
-        self.edit_block = self.create_input_field("Block Size", str(4048), params_layout)
+        self.edit_block = self.create_input_field("Block Size", str(4096), params_layout)
         self.edit_buf = self.create_input_field("Max Buffer", str(16000), params_layout)
         self.edit_back = self.create_input_field("Back Offset", str(1024), params_layout)
+        self.config_fields = [self.edit_block, self.edit_buf, self.edit_back]
 
         layout.addLayout(params_layout)
 
@@ -98,6 +103,7 @@ class MainWindow(QMainWindow):
 
         line_edit = QLineEdit()
         line_edit.setText(default_val)
+        line_edit.setProperty("default_value", default_val)
 
         # Restrict input to integers only
         validator = QIntValidator(0, 1000000)
@@ -106,6 +112,17 @@ class MainWindow(QMainWindow):
         v_layout.addWidget(line_edit)
         parent_layout.addLayout(v_layout)
         return line_edit
+
+    def _field_int(self, line_edit):
+        """QIntValidator permits an empty string as a valid intermediate state —
+        int("") raises. Fall back to the field's own default instead of crashing."""
+        text = line_edit.text()
+        if not text:
+            default_val = line_edit.property("default_value")
+            line_edit.setText(default_val)
+            return int(default_val)
+        return int(text)
+
     def populate_devices(self):
         devices = sd.query_devices()
         for i, d in enumerate(devices):
@@ -125,21 +142,22 @@ class MainWindow(QMainWindow):
 
     def toggle_service(self):
         if not self.is_service_active:
-            # Sync Config to Worker
+            block_size = self._field_int(self.edit_block)
+            max_buffer_size = self._field_int(self.edit_buf)
+            back = self._field_int(self.edit_back)
+            input_idx = self.input_dropdown.currentData()
+            output_idx = self.output_dropdown.currentData()
 
-            self.worker.block_size = int(self.edit_block.text())
-            self.worker.max_buffer_size = int(self.edit_buf.text())
-            self.worker.back = int(self.edit_back.text())
-
-            self.worker.input_device_idx = self.input_dropdown.currentData()
-            self.worker.output_device_idx = self.output_dropdown.currentData()
-
-            self.worker.start_stream()
+            self.start_requested.emit(block_size, max_buffer_size, back, input_idx, output_idx)
+            for field in self.config_fields:
+                field.setEnabled(False)  # don't allow mutating config while the stream is live
             self.btn_toggle.setText("Stop Service")
             self.btn_toggle.setStyleSheet("background-color: #e74c3c; color: white; font-weight: bold; padding: 10px;")
             self.is_service_active = True
         else:
-            self.worker.stop_stream()
+            self.stop_requested.emit()
+            for field in self.config_fields:
+                field.setEnabled(True)
             self.btn_toggle.setText("Start Service")
             self.btn_toggle.setStyleSheet("background-color: #2ecc71; color: white; font-weight: bold; padding: 10px;")
             self.is_service_active = False
@@ -153,15 +171,18 @@ class MainWindow(QMainWindow):
     # ----- TRAY LOGIC -----
     def setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
-        # Note: You should provide an actual .png or .ico file here
-        self.tray_icon.setIcon(QIcon(self.resource_path('assets/icon.png')))
+        icon_path = self.resource_path('assets/icon.png')
+        if os.path.exists(icon_path):
+            self.tray_icon.setIcon(QIcon(icon_path))
+        else:
+            print(f"Warning: tray icon not found at {icon_path}")
 
         tray_menu = QMenu()
         show_action = QAction("Show Window", self)
         show_action.triggered.connect(self.showNormal)
 
         quit_action = QAction("Exit", self)
-        quit_action.triggered.connect(QApplication.instance().quit)
+        quit_action.triggered.connect(self.quit_app)
 
         tray_menu.addAction(show_action)
         tray_menu.addSeparator()
@@ -204,6 +225,15 @@ class MainWindow(QMainWindow):
         if self.tray_icon.isVisible():
             self.hide()
             event.ignore()
+
+    def quit_app(self):
+        """Unlike a bare QApplication.quit(), make sure the PortAudio stream is
+        actually stopped and the worker thread is joined before exiting."""
+        if self.is_service_active:
+            self.stop_requested.emit()
+        self.worker_thread.quit()
+        self.worker_thread.wait(2000)
+        QApplication.instance().quit()
 
 
 if __name__ == "__main__":

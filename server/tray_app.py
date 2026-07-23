@@ -1,8 +1,9 @@
 """GUI launcher for the MusicMute WebSocket server — no terminal needed.
 
-Double-click (or `python -m server.tray_app`) to launch: shows a window with a
-Start/Stop button and logs, and minimizes to a tray icon on close (same UX as
-the main MusicMute desktop app in app/main.py).
+Double-click (or `python -m server.tray_app`) to launch: shows a window with
+adjustable quality/latency settings, a Start/Stop button, and logs, and
+minimizes to a tray icon on close (same UX as the main MusicMute desktop app
+in app/main.py).
 """
 import asyncio
 import logging
@@ -11,10 +12,10 @@ import sys
 import threading
 
 from PyQt6.QtCore import QObject, pyqtSignal
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction, QDoubleValidator, QIcon, QIntValidator
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QLabel,
-    QPushButton, QPlainTextEdit, QSystemTrayIcon, QMenu,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QPlainTextEdit, QSystemTrayIcon, QMenu,
 )
 
 from server import ws_server
@@ -33,12 +34,13 @@ class QtLogHandler(logging.Handler, QObject):
 
 class MainWindow(QMainWindow):
     model_ready = pyqtSignal()
-    status_changed = pyqtSignal(str, str)  # status label text, button text
+    # status label text, button text, whether config fields should be editable
+    status_changed = pyqtSignal(str, str, bool)
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MusicMute Server")
-        self.resize(420, 320)
+        self.resize(480, 420)
 
         self.server = None  # websockets server handle, set while running
 
@@ -71,6 +73,27 @@ class MainWindow(QMainWindow):
         self.lbl_status = QLabel("Loading model...")
         layout.addWidget(self.lbl_status)
 
+        # Quality/latency knobs — was "edit ws_server.py and rebuild the app"
+        # for every tweak; now these are just fields, applied on Start.
+        row1 = QHBoxLayout()
+        self.edit_block = self._int_field("Block Size", ws_server.BLOCK_SIZE, row1)
+        self.edit_buf = self._int_field("Max Buffer", ws_server.MAX_BUFFER_SIZE, row1)
+        self.edit_back = self._int_field("Back Offset", ws_server.BACK, row1)
+        self.edit_overlap = self._int_field("Overlap", ws_server.OVERLAP, row1)
+        layout.addLayout(row1)
+
+        row2 = QHBoxLayout()
+        self.edit_threshold_on = self._float_field(
+            "Music Threshold On", ws_server.MUSIC_THRESHOLD_ON, row2)
+        self.edit_threshold_off = self._float_field(
+            "Music Threshold Off", ws_server.MUSIC_THRESHOLD_OFF, row2)
+        layout.addLayout(row2)
+
+        self.config_fields = [
+            self.edit_block, self.edit_buf, self.edit_back, self.edit_overlap,
+            self.edit_threshold_on, self.edit_threshold_off,
+        ]
+
         self.btn_toggle = QPushButton("Start Server")
         self.btn_toggle.setEnabled(False)
         self.btn_toggle.clicked.connect(self.on_toggle_clicked)
@@ -85,6 +108,36 @@ class MainWindow(QMainWindow):
         self.console.setReadOnly(True)
         self.console.setVisible(False)
         layout.addWidget(self.console)
+
+    def _int_field(self, label_text, default_val, parent_layout):
+        v_layout = QVBoxLayout()
+        v_layout.addWidget(QLabel(label_text))
+        line_edit = QLineEdit(str(default_val))
+        line_edit.setProperty("default_value", str(default_val))
+        line_edit.setValidator(QIntValidator(0, 1000000))
+        v_layout.addWidget(line_edit)
+        parent_layout.addLayout(v_layout)
+        return line_edit
+
+    def _float_field(self, label_text, default_val, parent_layout):
+        v_layout = QVBoxLayout()
+        v_layout.addWidget(QLabel(label_text))
+        line_edit = QLineEdit(str(default_val))
+        line_edit.setProperty("default_value", str(default_val))
+        line_edit.setValidator(QDoubleValidator(0.0, 1.0, 3))
+        v_layout.addWidget(line_edit)
+        parent_layout.addLayout(v_layout)
+        return line_edit
+
+    def _field_value(self, line_edit, cast):
+        """The validators permit an empty string as a valid intermediate state —
+        cast("") raises. Fall back to the field's own default instead of crashing."""
+        text = line_edit.text()
+        if not text:
+            default_val = line_edit.property("default_value")
+            line_edit.setText(default_val)
+            return cast(default_val)
+        return cast(text)
 
     def toggle_logs(self):
         self.console.setVisible(not self.console.isVisible())
@@ -110,23 +163,53 @@ class MainWindow(QMainWindow):
 
     def on_toggle_clicked(self):
         if self.server is None:
-            asyncio.run_coroutine_threadsafe(self._start(), self.loop)
+            # Read fields here, on the Qt thread — QLineEdit isn't safe to touch
+            # from the asyncio thread the coroutine below runs on.
+            try:
+                block_size = self._field_value(self.edit_block, int)
+                max_buffer_size = self._field_value(self.edit_buf, int)
+                back = self._field_value(self.edit_back, int)
+                overlap = self._field_value(self.edit_overlap, int)
+                threshold_on = self._field_value(self.edit_threshold_on, float)
+                threshold_off = self._field_value(self.edit_threshold_off, float)
+            except ValueError as e:
+                self.log_to_console(f"Config Error: {e}")
+                return
+            asyncio.run_coroutine_threadsafe(
+                self._start(block_size, max_buffer_size, back, overlap, threshold_on, threshold_off),
+                self.loop,
+            )
         else:
             asyncio.run_coroutine_threadsafe(self._stop(), self.loop)
 
-    async def _start(self):
+    async def _start(self, block_size, max_buffer_size, back, overlap, threshold_on, threshold_off):
+        extractor = ws_server.extractor
+        extractor.block_size = block_size
+        extractor.max_buffer_size = max_buffer_size
+        extractor.back = back
+        extractor.overlap = overlap
+        extractor.music_threshold_on = threshold_on
+        extractor.music_threshold_off = threshold_off
+        try:
+            extractor.reset_buffer()  # also validates block_size+back+overlap <= max_buffer_size
+        except ValueError as e:
+            self.status_changed.emit(f"Config Error: {e}", "Start Server", True)
+            return
+
         self.server = await ws_server.start_server()
-        self.status_changed.emit("Running", "Stop Server")
+        self.status_changed.emit("Running", "Stop Server", False)
 
     async def _stop(self):
         await ws_server.stop_server(self.server)
         self.server = None
-        self.status_changed.emit("Model loaded — stopped", "Start Server")
+        self.status_changed.emit("Model loaded — stopped", "Start Server", True)
 
-    def on_status_changed(self, status_text, button_text):
+    def on_status_changed(self, status_text, button_text, fields_enabled):
         # Runs on the Qt main thread via the signal/slot queued connection.
         self.lbl_status.setText(status_text)
         self.btn_toggle.setText(button_text)
+        for field in self.config_fields:
+            field.setEnabled(fields_enabled)
         running = button_text == "Stop Server"
         color = "#e74c3c" if running else "#2ecc71"
         self.btn_toggle.setStyleSheet(f"background-color: {color}; color: white; font-weight: bold; padding: 10px;")
@@ -135,7 +218,11 @@ class MainWindow(QMainWindow):
 
     def setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
-        self.tray_icon.setIcon(QIcon(self.resource_path("assets/icon.png")))
+        icon_path = self.resource_path("assets/icon.png")
+        if os.path.exists(icon_path):
+            self.tray_icon.setIcon(QIcon(icon_path))
+        else:
+            print(f"Warning: tray icon not found at {icon_path}")
 
         tray_menu = QMenu()
         show_action = QAction("Show Window", self)

@@ -6,3 +6,4 @@ dist/
 torch_cache/
 *.spec.bak
 *.wav
+flagged_clips/
