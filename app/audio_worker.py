@@ -1,22 +1,11 @@
-import sys
-import os
 import numpy as np
-import torch
-from torchaudio.pipelines import HDEMUCS_HIGH_MUSDB_PLUS
-from time import time
-from PyQt6.QtCore import  pyqtSignal, QObject
+from PyQt6.QtCore import pyqtSignal, QObject
 import sounddevice as sd
-import torchaudio.utils.download as ta_download
-# disable progress bar as it causes pyqt to crash
-_original_download = ta_download._download
-def _download_no_progress(key, path, progress=False):
-    return _original_download(key, path, progress=False)
-ta_download._download = _download_no_progress
+from app.vocal_extractor import VocalExtractor
 
-HARDCODED_INPUT = "CABLE Output (VB-Audio Virtual , MME"
 
 class AudioWorker(QObject):
-    """Handles the heavy lifting: Model loading and Audio Stream."""
+    """PyQt adapter around VocalExtractor: wires it to a sounddevice Stream and Qt signals."""
     finished = pyqtSignal()
     log_signal = pyqtSignal(str)
     timing_signal = pyqtSignal(float, float)
@@ -26,53 +15,57 @@ class AudioWorker(QObject):
         super().__init__()
         self.stream = None
         self.is_running = False
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.model = None
 
-        # Current Config
-        self.block_size = 4048
-        self.max_buffer_size = 16000
-        self.back = 1024
+        self.extractor = VocalExtractor(
+            sample_rate=44100,
+            block_size=4048,
+            max_buffer_size=16000,
+            back=1024,
+            log=self.log_signal.emit,
+        )
+
+        self.input_device_idx = None
         self.output_device_idx = None
-        self.buffer = None
+
+    # Expose config as pass-through properties so app/main.py keeps working unchanged
+    @property
+    def block_size(self):
+        return self.extractor.block_size
+
+    @block_size.setter
+    def block_size(self, value):
+        self.extractor.block_size = value
+
+    @property
+    def max_buffer_size(self):
+        return self.extractor.max_buffer_size
+
+    @max_buffer_size.setter
+    def max_buffer_size(self, value):
+        self.extractor.max_buffer_size = value
+
+    @property
+    def back(self):
+        return self.extractor.back
+
+    @back.setter
+    def back(self, value):
+        self.extractor.back = value
+
+    @property
+    def device(self):
+        return self.extractor.device
 
     def load_model(self):
-        torch.hub.set_dir(self.resource_path("torch_cache"))
-        self.log_signal.emit(f"Loading model on {self.device} (please don't start until the model is ready)")
-        self.log_signal.emit("if this is first time opening the app the model will be downloaded (!300 MB)")
-
-        bundle = HDEMUCS_HIGH_MUSDB_PLUS
-        self.model = bundle.get_model().to(self.device).eval()
-        self.log_signal.emit("Model loaded successfully.(you can now start the service)")
-        self.model_loaded.emit()  # ✅ SIGNAL HERE
-
-    def extract_vocals(self, chunk):
-        # Update buffer
-        self.buffer = np.concatenate([self.buffer, chunk], axis=0)
-        self.buffer = self.buffer[-self.max_buffer_size:, :]
-
-        x = torch.from_numpy(self.buffer.T).unsqueeze(0).to(self.device)
-
-        with torch.no_grad():
-            s = time()
-            out = self.model(x)
-            e = time()
-            # Optionally log latency (careful with spamming)
-            # self.log_signal.emit(f"Infer: {(e-s)*1000:.2f}ms")
-            processing_ms = (e - s) * 1000
-            block_ms = (self.block_size / 44100) * 1000
-            self.timing_signal.emit(processing_ms, block_ms)
-
-        vocals = out[0][3].cpu().numpy().T.astype(np.float32)
-        # Apply the BACK offset logic
-        vocals = vocals[-self.block_size - self.back: -self.back if self.back > 0 else None, :]
-        return vocals
+        self.extractor.load_model()
+        self.model_loaded.emit()
 
     def audio_callback(self, indata, outdata, frames, time_info, status):
         if status:
             self.log_signal.emit(f"Status Error: {status}")
         try:
-            vocals = self.extract_vocals(indata)
+            vocals, processing_ms, block_ms = self.extractor.extract_vocals(indata)
+            self.timing_signal.emit(processing_ms, block_ms)
             if vocals.shape[0] < frames:
                 pad = np.zeros((frames - vocals.shape[0], 2), dtype=np.float32)
                 vocals = np.concatenate([vocals, pad], axis=0)
@@ -84,14 +77,14 @@ class AudioWorker(QObject):
             outdata[:] = np.zeros_like(indata)
 
     def start_stream(self):
-        self.buffer = np.zeros([self.max_buffer_size, 2]).astype(np.float32)
+        self.extractor.reset_buffer()
         try:
             self.stream = sd.Stream(
-                device=(HARDCODED_INPUT, self.output_device_idx),
-                samplerate=44100,
+                device=(self.input_device_idx, self.output_device_idx),
+                samplerate=self.extractor.sample_rate,
                 channels=2,
                 dtype="float32",
-                blocksize=self.block_size,
+                blocksize=self.extractor.block_size,
                 callback=self.audio_callback
             )
             self.stream.start()
@@ -106,13 +99,3 @@ class AudioWorker(QObject):
             self.stream.close()
         self.is_running = False
         self.log_signal.emit("Stream stopped.")
-
-    def resource_path(self, relative_path):
-        """ Get absolute path to resource, works for dev and for PyInstaller """
-        try:
-            # PyInstaller creates a temp folder and stores path in _MEIPASS
-            base_path = sys._MEIPASS
-        except Exception:
-            base_path = os.path.abspath(".")
-
-        return os.path.join(base_path, relative_path)

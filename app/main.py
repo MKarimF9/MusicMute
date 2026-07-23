@@ -10,10 +10,6 @@ from app.audio_worker import AudioWorker
 import os
 
 
-# ----- CONFIG CONSTANTS -----
-HARDCODED_INPUT = "CABLE Output (VB-Audio Virtual , MME"
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -49,8 +45,11 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
 
-        # Input (Static)
-        layout.addWidget(QLabel(f"<b>Input Device:</b> {HARDCODED_INPUT}"))
+        # Input Selection
+        layout.addWidget(QLabel("Input Device:"))
+        self.input_dropdown = QComboBox()
+        self.populate_input_devices()
+        layout.addWidget(self.input_dropdown)
 
         # Output Selection
         layout.addWidget(QLabel("Output Device:"))
@@ -113,6 +112,17 @@ class MainWindow(QMainWindow):
             if d['max_output_channels'] > 0:
                 self.output_dropdown.addItem(f"{d['name']} ({d['hostapi']})", i)
 
+    def populate_input_devices(self):
+        devices = sd.query_devices()
+        default_idx = None
+        for i, d in enumerate(devices):
+            if d['max_input_channels'] > 0:
+                self.input_dropdown.addItem(f"{d['name']} ({d['hostapi']})", i)
+                if 'blackhole' in d['name'].lower() or 'cable' in d['name'].lower():
+                    default_idx = self.input_dropdown.count() - 1
+        if default_idx is not None:
+            self.input_dropdown.setCurrentIndex(default_idx)
+
     def toggle_service(self):
         if not self.is_service_active:
             # Sync Config to Worker
@@ -121,6 +131,7 @@ class MainWindow(QMainWindow):
             self.worker.max_buffer_size = int(self.edit_buf.text())
             self.worker.back = int(self.edit_back.text())
 
+            self.worker.input_device_idx = self.input_dropdown.currentData()
             self.worker.output_device_idx = self.output_dropdown.currentData()
 
             self.worker.start_stream()

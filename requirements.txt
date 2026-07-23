@@ -2,3 +2,5 @@ numpy
 sounddevice
 PyQt6
 pyinstaller
+websockets
+soundfile

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: sans-serif; width: 180px; padding: 12px; }
+    button {
+      width: 100%; padding: 10px; font-weight: bold; color: white;
+      border: none; border-radius: 4px; cursor: pointer;
+    }
+    .off { background: #2ecc71; }
+    .on { background: #e74c3c; }
+    p { font-size: 11px; color: #666; }
+  </style>
+</head>
+<body>
+  <button id="toggle" class="off">Start</button>
+  <p>Requires the local MusicMute server running (server/ws_server.py).</p>
+  <script src="popup.js"></script>
+</body>
+</html>
