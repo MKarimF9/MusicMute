@@ -72,7 +72,24 @@ def _dump_flagged_clip(history):
     )
 
 
+# extractor is a single shared instance with mutable state (rolling buffer,
+# overlap-add accumulator, filtering state) — it isn't safe for more than one
+# connection to drive concurrently (a second connection's reset_buffer() would
+# corrupt an already-active session, and concurrent extract_vocals() calls
+# would race on the same numpy arrays from different executor threads). This
+# app is designed for one local user/one tab at a time, so just reject extras
+# instead of silently corrupting the active session.
+_connection_active = False
+
+
 async def handle(ws):
+    global _connection_active
+    if _connection_active:
+        log.warning("Rejecting connection — another client is already active")
+        await ws.close(code=1013, reason="Another client is already connected")
+        return
+    _connection_active = True
+
     log.info("Client connected")
     extractor.reset_buffer()
     loop = asyncio.get_running_loop()
@@ -90,7 +107,32 @@ async def handle(ws):
                     continue
 
                 if params.get("type") == "flag":
-                    _dump_flagged_clip(list(history))
+                    # Runs in the executor too: ~30s of WAV I/O would otherwise
+                    # block this coroutine (and therefore the audio queue).
+                    # Fire-and-forget, but log rather than silently swallow if
+                    # the write itself fails (e.g. disk full, permissions).
+                    flag_future = loop.run_in_executor(None, _dump_flagged_clip, list(history))
+                    flag_future.add_done_callback(
+                        lambda f: f.exception() and log.error(f"Flag dump failed: {f.exception()}")
+                    )
+                elif "block_size" in params:
+                    # The extension is the source of truth for these settings
+                    # (adjustable live via its popup sliders) -- apply them to
+                    # the shared extractor rather than rejecting on mismatch.
+                    SETTINGS_KEYS = (
+                        "block_size", "max_buffer_size", "back", "overlap",
+                        "music_threshold_on", "music_threshold_off", "force_mode",
+                    )
+                    for key in SETTINGS_KEYS:
+                        if key in params:
+                            setattr(extractor, key, params[key])
+                    try:
+                        extractor.reset_buffer()  # validates + reallocates for the new sizes
+                    except ValueError as e:
+                        log.error(f"Rejecting handshake settings: {e}")
+                        await ws.close(code=1002, reason=str(e))
+                        return
+                    log.info(f"Handshake OK, settings applied: {params}")
                 else:
                     log.info(f"Handshake: {params}")
                 continue
@@ -120,6 +162,7 @@ async def handle(ws):
         await recv_task
     finally:
         proc_task.cancel()
+        _connection_active = False
         log.info("Client disconnected")
 
 

@@ -12,11 +12,12 @@ import numpy as np
 import soundfile as sf
 import websockets
 
-SAMPLE_RATE = 44100
-CHANNELS = 2
-BLOCK_SIZE = 2048
+# Import rather than duplicate: a hardcoded copy of these constants would
+# silently drift out of sync with the server's actual config.
+from server.ws_server import SAMPLE_RATE, CHANNELS, BLOCK_SIZE, HOST, PORT
+
 DURATION_S = 6
-URI = "ws://localhost:8765"
+URI = f"ws://{HOST}:{PORT}"
 OUT_PATH = "server/test_output.wav"
 
 

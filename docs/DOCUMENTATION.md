@@ -242,7 +242,7 @@ These values are synced to the worker when you click **Start Service**.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| **Block Size** | `4048` | Number of samples processed per audio callback. Larger values increase latency but improve stability. Must match `sounddevice` blocksize. |
+| **Block Size** | `4096` | Number of samples processed per audio callback. Larger values increase latency but improve stability. Must match `sounddevice` blocksize. |
 | **Max Buffer** | `16000` | Maximum rolling buffer length in samples. More context can improve separation quality but increases memory and inference time. |
 | **Back Offset** | `1024` | Samples trimmed from the end of the model output to compensate for Demucs lookahead. Reducing this lowers latency but may introduce artifacts. |
 
@@ -271,7 +271,7 @@ Duration of one audio block:
 
 ```
 Block Time = (Block Size / Sample Rate) × 1000
-           = (4048 / 44100) × 1000 ≈ 91.8 ms
+           = (4096 / 44100) × 1000 ≈ 92.9 ms
 ```
 
 ### Real-Time Factor (RTF)

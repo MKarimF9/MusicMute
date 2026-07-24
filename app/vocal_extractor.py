@@ -21,7 +21,7 @@ class VocalExtractor:
 
     def __init__(self, sample_rate=44100, block_size=4096, max_buffer_size=16000, back=4096, overlap=512,
                  log=None, music_threshold_on=0.35, music_threshold_off=0.20,
-                 ema_alpha_attack=0.6, ema_alpha_release=0.15, silence_rms=1e-3):
+                 ema_alpha_attack=0.6, ema_alpha_release=0.15, silence_rms=1e-3, force_mode="auto"):
         self.log = log or _default_logger.info
 
         if torch.cuda.is_available():
@@ -53,6 +53,11 @@ class VocalExtractor:
         self.ema_alpha_attack = ema_alpha_attack
         self.ema_alpha_release = ema_alpha_release
         self.silence_rms = silence_rms  # below this, hold state instead of reclassifying off noise floor
+        # Manual override for content the auto-detector gets wrong (e.g. reverb-
+        # heavy a cappella vocals/nasheed/recitation misread as having
+        # accompaniment): "auto" (the detector above), "passthrough" (always
+        # original audio), "filter" (always the vocals stem).
+        self.force_mode = force_mode
 
         self.reset_buffer()  # allocates self.buffer, computes tapers, sets initial state
 
@@ -159,13 +164,17 @@ class VocalExtractor:
 
         # HDEMUCS_HIGH_MUSDB_PLUS stem order: drums, bass, other, vocals.
         vocals_block = self._overlap_add_vocals(out[0][3])
-        accompaniment_tensor = out[0][0] + out[0][1] + out[0][2]
+        # Slice each stem to the needed window on-device *before* summing, not
+        # after — summing the full max_buffer_size-length tensors first would
+        # do (and transfer) several times more work than necessary.
         accompaniment_start = -self.block_size - self.back
         accompaniment_end = -self.back if self.back > 0 else None
-        accompaniment_block = (
-            accompaniment_tensor[:, accompaniment_start:accompaniment_end]
-            .cpu().numpy().T.astype(np.float32)
+        accompaniment_slice = (
+            out[0][0][:, accompaniment_start:accompaniment_end]
+            + out[0][1][:, accompaniment_start:accompaniment_end]
+            + out[0][2][:, accompaniment_start:accompaniment_end]
         )
+        accompaniment_block = accompaniment_slice.cpu().numpy().T.astype(np.float32)
         # .copy(): _slice_block returns a view into self.buffer — must not alias
         # the buffer that future calls read for context.
         original_block = self._slice_block(self.buffer).copy()
@@ -173,21 +182,24 @@ class VocalExtractor:
         def rms(arr):
             return float(np.sqrt(np.mean(arr ** 2)))
 
-        original_rms = rms(original_block)
-        if original_rms < self.silence_rms:
-            pass  # near-silence: ratio would be meaningless noise-floor division; hold current state
+        if self.force_mode != "auto":
+            self._filtering = self.force_mode == "filter"
         else:
-            accompaniment_rms = rms(accompaniment_block)
-            vocals_rms = rms(vocals_block)
-            ratio = accompaniment_rms / (accompaniment_rms + vocals_rms + 1e-8)  # bounded [0, 1]
+            original_rms = rms(original_block)
+            if original_rms < self.silence_rms:
+                pass  # near-silence: ratio would be meaningless noise-floor division; hold current state
+            else:
+                accompaniment_rms = rms(accompaniment_block)
+                vocals_rms = rms(vocals_block)
+                ratio = accompaniment_rms / (accompaniment_rms + vocals_rms + 1e-8)  # bounded [0, 1]
 
-            alpha = self.ema_alpha_attack if ratio > self._smoothed_ratio else self.ema_alpha_release
-            self._smoothed_ratio = alpha * ratio + (1 - alpha) * self._smoothed_ratio
+                alpha = self.ema_alpha_attack if ratio > self._smoothed_ratio else self.ema_alpha_release
+                self._smoothed_ratio = alpha * ratio + (1 - alpha) * self._smoothed_ratio
 
-            if not self._filtering and self._smoothed_ratio > self.music_threshold_on:
-                self._filtering = True
-            elif self._filtering and self._smoothed_ratio < self.music_threshold_off:
-                self._filtering = False
+                if not self._filtering and self._smoothed_ratio > self.music_threshold_on:
+                    self._filtering = True
+                elif self._filtering and self._smoothed_ratio < self.music_threshold_off:
+                    self._filtering = False
 
         new_block = vocals_block if self._filtering else original_block
 
