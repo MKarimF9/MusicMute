@@ -73,6 +73,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     activeTabId = null;
     chrome.action.setBadgeText({ text: "" });
   }
+  if (message.type === "flag") {
+    // No-op here — handled directly by offscreen.js, which owns the WebSocket.
+    // Listed explicitly so it's clear this isn't an unhandled message type.
+    return false;
+  }
   return true;
 });
 

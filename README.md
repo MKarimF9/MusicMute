@@ -70,11 +70,11 @@ A window opens with adjustable quality settings (block size, buffer, thresholds,
 Package either mode as a standalone app you can launch from Finder/Applications:
 
 ```bash
-pyinstaller build.spec           # -> dist/MusicMute (desktop app)
+pyinstaller build.spec           # -> dist/MusicMute.app (desktop app)
 pyinstaller build_server.spec    # -> dist/MusicMuteServer.app (extension's server)
 ```
 
-Move `MusicMuteServer.app` to `/Applications` if you want it there. First launch: **right-click → Open** to bypass Gatekeeper (it isn't code-signed/notarized) — only needed once.
+Move either `.app` to `/Applications` if you want it there. First launch: **right-click → Open** to bypass Gatekeeper (they aren't code-signed/notarized) — only needed once.
 
 ---
 

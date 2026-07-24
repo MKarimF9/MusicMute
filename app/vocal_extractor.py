@@ -159,13 +159,17 @@ class VocalExtractor:
 
         # HDEMUCS_HIGH_MUSDB_PLUS stem order: drums, bass, other, vocals.
         vocals_block = self._overlap_add_vocals(out[0][3])
-        accompaniment_tensor = out[0][0] + out[0][1] + out[0][2]
+        # Slice each stem to the needed window on-device *before* summing, not
+        # after — summing the full max_buffer_size-length tensors first would
+        # do (and transfer) several times more work than necessary.
         accompaniment_start = -self.block_size - self.back
         accompaniment_end = -self.back if self.back > 0 else None
-        accompaniment_block = (
-            accompaniment_tensor[:, accompaniment_start:accompaniment_end]
-            .cpu().numpy().T.astype(np.float32)
+        accompaniment_slice = (
+            out[0][0][:, accompaniment_start:accompaniment_end]
+            + out[0][1][:, accompaniment_start:accompaniment_end]
+            + out[0][2][:, accompaniment_start:accompaniment_end]
         )
+        accompaniment_block = accompaniment_slice.cpu().numpy().T.astype(np.float32)
         # .copy(): _slice_block returns a view into self.buffer — must not alias
         # the buffer that future calls read for context.
         original_block = self._slice_block(self.buffer).copy()
