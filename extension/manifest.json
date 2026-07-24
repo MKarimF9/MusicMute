@@ -3,7 +3,8 @@
   "name": "MusicMute — Reels Vocal Isolator",
   "version": "0.1.0",
   "description": "Removes background music from the active tab's audio (e.g. Instagram Reels) using a local vocal-isolation model.",
-  "permissions": ["tabCapture", "offscreen", "activeTab"],
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2331dHkuFt/WxtGKT/gaVYOrMTTdvGFfbU3cZvPYmrjBwBiaxmIFE2bNpK3WYrglC5VWpynExtFaxZMyOWnjUozzjf7hOftHsfl1XDT5K2yAWdcByqtnueFQZMcLMJeknqQbQ3Q22iW27kZv0XGQg6jCIiayG6A8la/BMo4MPK9vMfImJOpBIqQYBfSdl37z7sa+vC0Arn25A3aa12JjJEHQj9qDS/e2ujVIHmOWf0S5F4DU7k6FLDLASVj62GwTFbntTzUobnBhcxrz2RdaUv8BZbIL+CmOJgAiUyp/EKa3yZNbcgdlo7BtB/vSa8EdpIQtkayku6MMu5QxHRevTQIDAQAB",
+  "permissions": ["tabCapture", "offscreen", "activeTab", "nativeMessaging", "storage"],
   "host_permissions": ["ws://localhost:8765/*"],
   "background": {
     "service_worker": "background.js"

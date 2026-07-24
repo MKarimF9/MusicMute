@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <style>
-    body { font-family: sans-serif; width: 180px; padding: 12px; }
+    body { font-family: sans-serif; width: 320px; padding: 12px; }
     button {
       width: 100%; padding: 10px; font-weight: bold; color: white;
       border: none; border-radius: 4px; cursor: pointer;
@@ -11,13 +11,70 @@
     .off { background: #2ecc71; }
     .on { background: #e74c3c; }
     .flag { background: #f39c12; margin-top: 8px; }
+    .stop-server { background: #7f8c8d; margin-top: 8px; font-size: 11px; padding: 6px; }
     p { font-size: 11px; color: #666; }
+    #status { font-size: 11px; color: #333; min-height: 14px; margin-top: 4px; }
+    details { margin-top: 10px; border-top: 1px solid #ddd; padding-top: 8px; }
+    summary { cursor: pointer; font-size: 12px; font-weight: bold; color: #333; }
+    .field { margin-top: 8px; }
+    .field label { display: flex; justify-content: space-between; font-size: 11px; color: #333; }
+    .field input[type="range"] { width: 100%; }
+    #settings-warning { font-size: 11px; color: #c0392b; margin-top: 6px; display: none; }
+    #reset-defaults { font-size: 11px; background: none; color: #3498db; padding: 4px; margin-top: 6px; font-weight: normal; }
+    #mode-row { margin-top: 10px; }
+    #mode-row label { font-size: 11px; color: #333; display: block; margin-top: 2px; }
+    #mode-row select { width: 100%; padding: 4px; font-size: 12px; }
   </style>
 </head>
 <body>
   <button id="toggle" class="off">Start</button>
+  <div id="status"></div>
   <button id="flag" class="flag">Flag last 30s</button>
-  <p>Requires the local MusicMute server running (server/ws_server.py).</p>
+  <p>Server starts automatically. Requires one-time setup — see README (native_host/install.py) — otherwise it falls back to expecting a manually-launched server.</p>
+
+  <div id="mode-row">
+    <label for="force_mode">Filtering mode</label>
+    <select id="force_mode">
+      <option value="auto">Auto (detect music)</option>
+      <option value="passthrough">Always play original</option>
+      <option value="filter">Always filter</option>
+    </select>
+    <p>Use "Always play original" for content the detector wrongly filters — a cappella vocals, nasheed, Quran recitation, etc. Applies next time you click Start.</p>
+  </div>
+
+  <details id="advanced">
+    <summary>Advanced settings</summary>
+    <div class="field">
+      <label>Block Size <span id="val-block_size"></span></label>
+      <input type="range" id="block_size" min="512" max="8192" step="256">
+    </div>
+    <div class="field">
+      <label>Max Buffer <span id="val-max_buffer_size"></span></label>
+      <input type="range" id="max_buffer_size" min="4096" max="32768" step="512">
+    </div>
+    <div class="field">
+      <label>Back Offset <span id="val-back"></span></label>
+      <input type="range" id="back" min="0" max="8192" step="256">
+    </div>
+    <div class="field">
+      <label>Overlap <span id="val-overlap"></span></label>
+      <input type="range" id="overlap" min="0" max="2048" step="64">
+    </div>
+    <div class="field">
+      <label>Music Threshold On <span id="val-music_threshold_on"></span></label>
+      <input type="range" id="music_threshold_on" min="0" max="1" step="0.01">
+    </div>
+    <div class="field">
+      <label>Music Threshold Off <span id="val-music_threshold_off"></span></label>
+      <input type="range" id="music_threshold_off" min="0" max="1" step="0.01">
+    </div>
+    <div id="settings-warning"></div>
+    <button id="reset-defaults">Reset to defaults</button>
+    <p>Changes apply the next time you click Start.</p>
+    <button id="stop-server" class="stop-server">Stop server (free GPU/RAM)</button>
+  </details>
+
+  <script src="settings.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

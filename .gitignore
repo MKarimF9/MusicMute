@@ -7,3 +7,5 @@ torch_cache/
 *.spec.bak
 *.wav
 flagged_clips/
+native_host/host_config.json
+native_host/host.log

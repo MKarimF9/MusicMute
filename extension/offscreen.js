@@ -1,6 +1,5 @@
 const SAMPLE_RATE = 44100;
 const CHANNELS = 2;
-const BLOCK_SIZE = 2048; // must match server/ws_server.py BLOCK_SIZE
 const WS_URL = "ws://localhost:8765";
 
 const PREBUFFER_S = 0.15; // cushion against WS/inference jitter, at the cost of a bit of latency
@@ -9,11 +8,19 @@ let audioContext = null;
 let mediaStream = null;
 let ws = null;
 let nextPlaybackTime = null; // null until the first chunk arrives
+let currentSettings = null; // set at the start of each startCapture() call
 
 // Set to true for Stage-2 verification (capture/playback loopback, no server).
 const LOOPBACK_NO_SERVER = false;
 
-async function startCapture(streamId) {
+// Settings are loaded by background.js and passed in via the start-capture
+// message; the server itself is also started by background.js (via the
+// native messaging host) before that message is sent -- offscreen documents
+// only have access to a restricted subset of extension APIs and can't use
+// chrome.storage or chrome.runtime.connectNative directly.
+async function startCapture(streamId, settings) {
+  currentSettings = settings;
+
   mediaStream = await navigator.mediaDevices.getUserMedia({
     audio: {
       mandatory: {
@@ -30,7 +37,7 @@ async function startCapture(streamId) {
 
   const source = audioContext.createMediaStreamSource(mediaStream);
   const captureNode = new AudioWorkletNode(audioContext, "capture-processor", {
-    processorOptions: { blockSize: BLOCK_SIZE },
+    processorOptions: { blockSize: currentSettings.block_size },
   });
 
   // Tap only — captureNode's own output is muted (gain 0) before reaching
@@ -66,7 +73,11 @@ function connectWebSocket() {
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ sample_rate: SAMPLE_RATE, channels: CHANNELS, block_size: BLOCK_SIZE }));
+    ws.send(JSON.stringify({
+      sample_rate: SAMPLE_RATE,
+      channels: CHANNELS,
+      ...currentSettings, // block_size, max_buffer_size, back, overlap, music_threshold_on/off
+    }));
   };
 
   ws.onmessage = (event) => {
@@ -126,7 +137,7 @@ function stopCapture() {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "start-capture") {
-    startCapture(message.streamId)
+    startCapture(message.streamId, message.settings)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => {
         console.error("MusicMute: startCapture failed", err);

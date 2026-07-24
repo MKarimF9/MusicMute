@@ -116,16 +116,23 @@ async def handle(ws):
                         lambda f: f.exception() and log.error(f"Flag dump failed: {f.exception()}")
                     )
                 elif "block_size" in params:
-                    if params["block_size"] != extractor.block_size:
-                        log.error(
-                            f"Client block_size ({params['block_size']}) != server block_size "
-                            f"({extractor.block_size}) — closing connection instead of silently "
-                            f"desyncing. Match the server's Block Size field to the extension's, "
-                            f"or vice versa."
-                        )
-                        await ws.close(code=1002, reason="block_size mismatch")
+                    # The extension is the source of truth for these settings
+                    # (adjustable live via its popup sliders) -- apply them to
+                    # the shared extractor rather than rejecting on mismatch.
+                    SETTINGS_KEYS = (
+                        "block_size", "max_buffer_size", "back", "overlap",
+                        "music_threshold_on", "music_threshold_off", "force_mode",
+                    )
+                    for key in SETTINGS_KEYS:
+                        if key in params:
+                            setattr(extractor, key, params[key])
+                    try:
+                        extractor.reset_buffer()  # validates + reallocates for the new sizes
+                    except ValueError as e:
+                        log.error(f"Rejecting handshake settings: {e}")
+                        await ws.close(code=1002, reason=str(e))
                         return
-                    log.info(f"Handshake OK: {params}")
+                    log.info(f"Handshake OK, settings applied: {params}")
                 else:
                     log.info(f"Handshake: {params}")
                 continue
